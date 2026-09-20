@@ -7,7 +7,7 @@ import (
 
 func TestRenderParseRoundTrip(t *testing.T) {
 	h := Handoff{
-		FM:   FrontMatter{Goon: 1, ID: "x1", Source: "claude-code", Project: "GoOn", Git: Git{Branch: "main", Commit: "abc", Dirty: true, DirtyFiles: []string{"a.go"}}},
+		FM:   FrontMatter{Goon: 1, ID: "x1", Created: "2026-09-20T21:48:03Z", Source: "claude-code", Project: "GoOn", Git: Git{Branch: "main", Commit: "abc", Dirty: true, DirtyFiles: []string{"a.go"}}},
 		Body: "## 目标\n做工具\n## 当前状态\n- ✅ done\n## 关键决策\n- 用 Go\n## 改动文件\n- a.go\n## 下一步\n- 测试\n## 坑与约定\n- 无\n## 开放问题\n- 无",
 	}
 	text, err := Render(h)
@@ -20,6 +20,9 @@ func TestRenderParseRoundTrip(t *testing.T) {
 	}
 	if got.FM.Git.Commit != "abc" || !got.FM.Git.Dirty || got.FM.Git.DirtyFiles[0] != "a.go" {
 		t.Fatalf("roundtrip lost git: %+v", got.FM.Git)
+	}
+	if got.FM.Created != "2026-09-20T21:48:03Z" {
+		t.Fatalf("roundtrip lost created: %q", got.FM.Created)
 	}
 }
 

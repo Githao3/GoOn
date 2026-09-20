@@ -69,7 +69,7 @@ func (a *App) Distill(m extract.SessionModel, chat llm.Chat) (string, error) {
 	snap, _ := gitrepo.Snapshot(a.Root)
 	id := handoff.NewID(a.now(), m.Source)
 	h := handoff.Handoff{FM: handoff.FrontMatter{
-		Goon: 1, ID: id, Source: m.Source, Project: filepath.Base(a.Root),
+		Goon: 1, ID: id, Created: a.now().UTC().Format(time.RFC3339), Source: m.Source, Project: filepath.Base(a.Root),
 		Git: handoff.Git{Branch: snap.Branch, Commit: snap.Commit, Dirty: snap.Dirty, DirtyFiles: snap.DirtyFiles},
 	}}
 	h.Body = body
@@ -115,8 +115,8 @@ func (a *App) WriteSalvage(m extract.SessionModel) (string, error) {
 	}
 	name := handoff.NewID(a.now(), m.Source) + ".raw.md"
 	rel := filepath.Join(a.Cfg.SalvageDir, name)
-	content := "# Salvage raw extract — " + m.Source + " " + m.SessionID + "\n\n<untrusted>\n" +
-		redact.Redact(m.Transcript()) + "\n</untrusted>\n"
+	content := "# Salvage raw extract — " + m.Source + " " + m.SessionID + "\n\n" +
+		redact.Wrap(redact.Redact(m.Transcript())) + "\n"
 	full := filepath.Join(a.Root, rel)
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return "", err
@@ -144,7 +144,7 @@ func (a *App) Resume(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	d, err := gitrepo.Drift(a.Root, h.FM.Git.Commit, h.FM.ID)
+	d, err := gitrepo.Drift(a.Root, h.FM.Git.Commit, h.FM.Created)
 	if err != nil {
 		return "", err
 	}
@@ -179,7 +179,7 @@ func (a *App) New(source string) (string, error) {
 	snap, _ := gitrepo.Snapshot(a.Root)
 	id := handoff.NewID(a.now(), source)
 	h := handoff.Handoff{FM: handoff.FrontMatter{
-		Goon: 1, ID: id, Source: source, Project: filepath.Base(a.Root),
+		Goon: 1, ID: id, Created: a.now().UTC().Format(time.RFC3339), Source: source, Project: filepath.Base(a.Root),
 		Git: handoff.Git{Branch: snap.Branch, Commit: snap.Commit, Dirty: snap.Dirty, DirtyFiles: snap.DirtyFiles},
 	}}
 	h.Body = handoff.BlankBody()

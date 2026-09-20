@@ -52,6 +52,9 @@ func TestEndToEnd_DistillResumeSalvage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if h.FM.Created == "" {
+		t.Fatal("handoff Created should be set")
+	}
 	if !strings.Contains(h.Body, "做GoOn") || h.FM.Source != "claude-code" {
 		t.Fatalf("bad handoff: %+v", h.FM)
 	}
@@ -68,6 +71,13 @@ func TestEndToEnd_DistillResumeSalvage(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(app.Root, ".goon", "salvage", name)); err != nil {
 		t.Fatalf("salvage raw not written: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(app.Root, ".goon", "salvage", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "<untrusted>") {
+		t.Fatalf("salvage should not use raw untrusted tags:\n%s", raw)
 	}
 }
 

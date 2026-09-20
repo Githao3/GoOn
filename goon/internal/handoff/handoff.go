@@ -18,6 +18,7 @@ type Git struct {
 type FrontMatter struct {
 	Goon       int    `yaml:"goon"`
 	ID         string `yaml:"id"`
+	Created    string `yaml:"created,omitempty"`
 	Source     string `yaml:"source"`
 	Project    string `yaml:"project"`
 	Git        Git    `yaml:"git"`

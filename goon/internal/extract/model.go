@@ -3,6 +3,7 @@ package extract
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 type FileEdit struct {
@@ -31,6 +32,13 @@ type SessionModel struct {
 	Project   Project
 	Events    []Event
 	Todos     []string
+}
+
+// SessionSummary is a discoverable session entry (P2 discovery).
+type SessionSummary struct {
+	ID       string
+	Title    string
+	Modified time.Time
 }
 
 // Transcript produces a trimmed plain-text timeline used as the distill prompt body.

@@ -49,3 +49,22 @@ func TestStore_InitSaveChainLatest(t *testing.T) {
 		t.Fatalf("index should list both: %q", idx)
 	}
 }
+
+func TestStore_NoSelfSupersede(t *testing.T) {
+	root := t.TempDir()
+	s, _ := Init(root, ".goon")
+	h := handoff.Handoff{FM: handoff.FrontMatter{Goon: 1, ID: "same", Source: "codex"}, Body: "## 目标\nx"}
+	if err := s.Save(h, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(h, time.Now()); err != nil { // re-save same id
+		t.Fatal(err)
+	}
+	got, err := s.Load("same")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FM.Supersedes == "same" {
+		t.Fatalf("self-supersede detected: %q", got.FM.Supersedes)
+	}
+}

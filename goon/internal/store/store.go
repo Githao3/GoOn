@@ -41,7 +41,7 @@ func (s *Store) path(id string) string { return filepath.Join(s.handoffsDir, id+
 // Save writes a handoff: if an earlier one exists and this one has no explicit
 // Supersedes, it is chained to the current latest, then index.md is refreshed.
 func (s *Store) Save(h handoff.Handoff, now time.Time) error {
-	if prev, ok, _ := s.latestUnlocked(); ok && h.FM.Supersedes == "" {
+	if prev, ok, _ := s.latestUnlocked(); ok && h.FM.Supersedes == "" && prev != h.FM.ID {
 		h.FM.Supersedes = prev
 	}
 	text, err := handoff.Render(h)

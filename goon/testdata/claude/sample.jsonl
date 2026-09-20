@@ -1,0 +1,4 @@
+{"type":"mode","sessionId":"s1"}
+{"type":"user","message":{"role":"user","content":"这个文件夹有什么"},"timestamp":"2026-09-15T13:19:52.319Z","cwd":"D:\\proj","gitBranch":"main","sessionId":"s1","isSidechain":false}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"列一下"},{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]},"timestamp":"2026-09-15T13:19:55.000Z","cwd":"D:\\proj","gitBranch":"main","sessionId":"s1","isSidechain":false}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.go"}}]},"timestamp":"2026-09-15T13:19:56.000Z","sessionId":"s1","isSidechain":true}

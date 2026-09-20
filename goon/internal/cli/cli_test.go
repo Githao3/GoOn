@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,9 +9,12 @@ import (
 	"time"
 
 	"goon/internal/config"
+	"goon/internal/discover"
 	"goon/internal/extract"
 	"goon/internal/handoff"
 	"goon/internal/store"
+
+	_ "modernc.org/sqlite" // registers the "sqlite" driver for the synthetic fixture
 )
 
 type fakeChat struct{}
@@ -121,5 +125,189 @@ func TestFinalize_RejectsMissingSections(t *testing.T) {
 	}
 	if err := app.Finalize("z"); err == nil {
 		t.Fatal("finalize should fail on missing sections")
+	}
+}
+
+// newTestOpenCodeDB lays down a synthetic opencode-shaped SQLite DB holding one
+// session for project dir `directory` with a single user text part `content`.
+// Returns the db path and its session id.
+func newTestOpenCodeDB(t *testing.T, directory, content string) (string, string) {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "opencode.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	const schema = `CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, path TEXT, title TEXT, time_updated INTEGER);
+CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT);
+CREATE TABLE part (id TEXT PRIMARY KEY, session_id TEXT, message_id TEXT, data TEXT, time_created INTEGER);`
+	if _, err := db.Exec(schema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	sid := "ses_synthetic1"
+	if _, err := db.Exec(`INSERT INTO session (id, directory, path, title, time_updated) VALUES (?, ?, '', ?, ?)`,
+		sid, directory, "合成会话", time.Now().UnixMilli()); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO message (id, session_id, data) VALUES (?, ?, ?)`,
+		"msg1", sid, `{"role":"user"}`); err != nil {
+		t.Fatalf("insert message: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO part (id, session_id, message_id, data, time_created) VALUES (?, ?, ?, ?, ?)`,
+		"part1", sid, "msg1", `{"type":"text","text":"`+content+`"}`, time.Now().UnixMilli()); err != nil {
+		t.Fatalf("insert part: %v", err)
+	}
+	return dbPath, sid
+}
+
+func TestAutoSalvage_FromOpencode(t *testing.T) {
+	root := t.TempDir()
+	dbPath, sid := newTestOpenCodeDB(t, filepath.ToSlash(root), "继续做GoOn")
+	app := &App{Root: root, Cfg: config.Config{HandoffDir: ".goon/handoffs", SalvageDir: ".goon/salvage"},
+		Now: func() time.Time { return time.Unix(0, 0) }}
+	app.roots = discover.Roots{OpenCodeDB: dbPath}
+
+	name, err := app.AutoSalvage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".goon", "salvage", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "继续做GoOn") {
+		t.Fatalf("salvage missing content:\n%s", data)
+	}
+	if !strings.Contains(string(data), sid) {
+		t.Fatalf("salvage header should name the session %q:\n%s", sid, data)
+	}
+}
+
+func TestParseCandidate_SQLiteRefAndBadRef(t *testing.T) {
+	root := t.TempDir()
+	dbPath, sid := newTestOpenCodeDB(t, filepath.ToSlash(root), "显式调用")
+	app := &App{Root: root, Cfg: config.Config{HandoffDir: ".goon/handoffs", SalvageDir: ".goon/salvage"},
+		Now: func() time.Time { return time.Unix(0, 0) }}
+
+	m, err := app.parseCandidate(discover.Candidate{Client: "opencode", Kind: discover.KindSQLite, Ref: dbPath + "#" + sid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Source != "opencode" || m.SessionID != sid || !strings.Contains(m.Transcript(), "显式调用") {
+		t.Fatalf("bad model: %+v", m)
+	}
+	if _, err := app.parseCandidate(discover.Candidate{Client: "opencode", Kind: discover.KindSQLite, Ref: dbPath}); err == nil {
+		t.Fatal("expected error for sqlite ref without '#'")
+	}
+	// Explicit source path routes through the configured root as well.
+	app.roots = discover.Roots{OpenCodeDB: dbPath}
+	if _, err := app.parseSession(sid, "opencode"); err != nil {
+		t.Fatalf("parseSession opencode: %v", err)
+	}
+	if _, err := app.parseSession("x", "gemini"); err == nil || !strings.Contains(err.Error(), "zcode") {
+		t.Fatalf("unsupported source message should list all four clients: %v", err)
+	}
+}
+
+func TestAuto_NoSessionsErrors(t *testing.T) {
+	root := t.TempDir()
+	app := &App{Root: root, Cfg: config.Config{HandoffDir: ".goon/handoffs", SalvageDir: ".goon/salvage"},
+		Now: func() time.Time { return time.Unix(0, 0) }}
+	app.roots = discover.Roots{ // nothing exists behind these paths
+		ClaudeProjects: filepath.Join(root, "nope-claude"),
+		CodexSessions:  filepath.Join(root, "nope-codex"),
+		OpenCodeDB:     filepath.Join(root, "nope.db"),
+		ZcodeDB:        filepath.Join(root, "nope-z.db"),
+	}
+	if _, err := app.AutoSalvage(); err == nil {
+		t.Fatal("expected error when nothing discovered")
+	}
+	if _, err := app.AutoDistill(); err == nil {
+		t.Fatal("expected error when nothing discovered (distill)")
+	}
+}
+
+func TestSplitSQLiteRef(t *testing.T) {
+	for _, tc := range []struct{ ref, wantDB, wantID string }{
+		{`C:\Users\me\.local\share\opencode\opencode.db#ses_1`, `C:\Users\me\.local\share\opencode\opencode.db`, "ses_1"},
+		{"/tmp/we#ird.db#ses_2", "/tmp/we#ird.db", "ses_2"},
+		{"a#b#c", "a#b", "c"},
+	} {
+		db, id, err := splitSQLiteRef(tc.ref)
+		if err != nil {
+			t.Errorf("splitSQLiteRef(%q): %v", tc.ref, err)
+			continue
+		}
+		if db != tc.wantDB || id != tc.wantID {
+			t.Errorf("splitSQLiteRef(%q) = (%q, %q), want (%q, %q)", tc.ref, db, id, tc.wantDB, tc.wantID)
+		}
+	}
+	if _, _, err := splitSQLiteRef("no-separator"); err == nil || !strings.Contains(err.Error(), "bad sqlite ref") {
+		t.Fatalf("ref without '#' should error, got %v", err)
+	}
+}
+
+func TestWithRootDefaults(t *testing.T) {
+	cfg := withRootDefaults(config.Config{ClaudeProjects: "D:/custom"}, `C:\Users\me`)
+	if cfg.ClaudeProjects != "D:/custom" {
+		t.Fatalf("explicit value must survive, got %q", cfg.ClaudeProjects)
+	}
+	if cfg.CodexSessions != filepath.Join(`C:\Users\me`, ".codex", "sessions") {
+		t.Fatalf("codex_sessions not defaulted: %q", cfg.CodexSessions)
+	}
+	if cfg.OpenCodeDB == "" || cfg.ZcodeDB == "" {
+		t.Fatalf("opencode/zcode roots should default: %+v", cfg)
+	}
+	// No home: leave everything empty rather than invent paths.
+	if got := withRootDefaults(config.Config{}, ""); got.OpenCodeDB != "" {
+		t.Fatalf("empty home should not default roots, got %q", got.OpenCodeDB)
+	}
+}
+
+// TestWithRootDefaults_ExpandsTilde guards the silent-discovery-failure case: a
+// user-set "~/..." root is non-empty, so the home default never overwrites it —
+// it must be expanded instead, since Go never expands "~" itself.
+func TestWithRootDefaults_ExpandsTilde(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	got := withRootDefaults(config.Config{ClaudeProjects: "~/x", CodexSessions: `~\y`, ZcodeDB: "~"}, home)
+	if got.ClaudeProjects != filepath.Join(home, "x") {
+		t.Fatalf("~/x should expand, got %q", got.ClaudeProjects)
+	}
+	if got.CodexSessions != filepath.Join(home, "y") {
+		t.Fatalf(`~\y should expand, got %q`, got.CodexSessions)
+	}
+	if got.ZcodeDB != home {
+		t.Fatalf("bare ~ should expand to home, got %q", got.ZcodeDB)
+	}
+	// Absolute stays untouched; empty still takes the home default.
+	if got.OpenCodeDB != filepath.Join(home, ".local", "share", "opencode", "opencode.db") {
+		t.Fatalf("empty root should be defaulted, got %q", got.OpenCodeDB)
+	}
+	abs := filepath.Join(home, "abs", "db.sqlite")
+	if got := withRootDefaults(config.Config{OpenCodeDB: abs}, home); got.OpenCodeDB != abs {
+		t.Fatalf("absolute root must stay unchanged, got %q", got.OpenCodeDB)
+	}
+}
+
+func TestExpandHome(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	for _, tc := range []struct{ in, want string }{
+		{"~/x", filepath.Join(home, "x")},
+		{`~\x`, filepath.Join(home, "x")},
+		{"~", home},
+		{"~/a/b", filepath.Join(home, "a", "b")},
+		{"", ""},
+		{"D:/custom", "D:/custom"},
+		{`C:\Users\me\.claude\projects`, `C:\Users\me\.claude\projects`},
+		{"~tildeuser/x", "~tildeuser/x"}, // not ours to expand
+	} {
+		if got := expandHome(tc.in, home); got != tc.want {
+			t.Errorf("expandHome(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	// Without a home the value passes through verbatim.
+	if got := expandHome("~/x", ""); got != "~/x" {
+		t.Fatalf("empty home must leave the value alone, got %q", got)
 	}
 }

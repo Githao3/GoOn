@@ -40,7 +40,11 @@ func (m SessionModel) Transcript() string {
 		switch e.Kind {
 		case "tool":
 			if e.FileEdit != nil {
-				fmt.Fprintf(&b, "TOOL %s %s (+%d -%d)\n", e.ToolName, e.FileEdit.Path, e.FileEdit.Added, e.FileEdit.Removed)
+				if e.FileEdit.Added == 0 && e.FileEdit.Removed == 0 {
+					fmt.Fprintf(&b, "TOOL %s %s\n", e.ToolName, e.FileEdit.Path)
+				} else {
+					fmt.Fprintf(&b, "TOOL %s %s (+%d -%d)\n", e.ToolName, e.FileEdit.Path, e.FileEdit.Added, e.FileEdit.Removed)
+				}
 			} else {
 				fmt.Fprintf(&b, "TOOL %s\n", e.ToolName)
 			}

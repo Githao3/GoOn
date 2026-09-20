@@ -23,21 +23,29 @@ type State struct {
 func run(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
+	// Capture stdout only: stderr carries "fatal: ..." text (e.g. an empty-repo
+	// HEAD lookup) that must never leak into a snapshot or the resume prompt.
+	out, err := cmd.Output()
 	// Trim only trailing whitespace: git's porcelain lines carry a leading
 	// status column (e.g. " M path") whose spaces are positionally significant.
 	return strings.TrimRight(string(out), " \t\r\n"), err
 }
 
 // Snapshot captures current branch/commit/dirty state. Non-git dirs return
-// State{IsRepo:false} with no error.
+// State{IsRepo:false} with no error. A repo without any commit yet keeps
+// Commit/Branch empty rather than surfacing git's stderr.
 func Snapshot(dir string) (State, error) {
-	if _, err := run(dir, "rev-parse", "--is-inside-work-tree"); err != nil {
+	inside, err := run(dir, "rev-parse", "--is-inside-work-tree")
+	if err != nil || inside != "true" {
 		return State{}, nil
 	}
 	s := State{IsRepo: true}
-	s.Branch, _ = run(dir, "rev-parse", "--abbrev-ref", "HEAD")
-	s.Commit, _ = run(dir, "rev-parse", "HEAD")
+	if b, err := run(dir, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+		s.Branch = b
+	}
+	if c, err := run(dir, "rev-parse", "--verify", "HEAD"); err == nil {
+		s.Commit = c
+	}
 	por, _ := run(dir, "status", "--porcelain")
 	if por != "" {
 		s.Dirty = true
@@ -58,9 +66,10 @@ type Report struct {
 	BaseMissing bool
 }
 
-// Drift compares baseCommit..HEAD. since (RFC3339) is a fallback used only when
-// the base commit is missing (rebase/squash).
-func Drift(dir, baseCommit, since string) (Report, error) {
+// Drift compares baseCommit..HEAD. baseBranch is the branch recorded at handoff
+// time (warns if it changed). since (RFC3339) is a fallback used only when the
+// base commit is missing (rebase/squash).
+func Drift(dir, baseCommit, baseBranch, since string) (Report, error) {
 	cur, _ := Snapshot(dir)
 	var d Report
 	var b strings.Builder
@@ -83,10 +92,18 @@ func Drift(dir, baseCommit, since string) (Report, error) {
 	names, _ := run(dir, "diff", "--name-status", baseCommit, "HEAD")
 	fmt.Fprintf(&b, "当前分支: %s\n", cur.Branch)
 	fmt.Fprintf(&b, "基准 %s → HEAD %s，%d 个新提交\n", short(baseCommit), short(cur.Commit), d.NewCommits)
+	if baseBranch != "" && cur.Branch != "" && cur.Branch != baseBranch {
+		fmt.Fprintf(&b, "⚠️ 分支变化: %s → %s\n", baseBranch, cur.Branch)
+	}
 	if names != "" {
 		b.WriteString("变更文件:\n")
 		b.WriteString(ind(names))
-	} else if d.NewCommits == 0 {
+	}
+	if cur.Dirty {
+		fmt.Fprintf(&b, "⚠️ 当前工作区有 %d 个未提交改动（勿直接覆盖）:\n", len(cur.DirtyFiles))
+		b.WriteString(ind(strings.Join(cur.DirtyFiles, "\n")))
+	}
+	if d.NewCommits == 0 && names == "" && !cur.Dirty {
 		b.WriteString("✓ 自上次交接后无代码变动。\n")
 	}
 	d.Body = b.String()

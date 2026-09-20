@@ -51,7 +51,7 @@ func TestDrift_DetectsChangesSince(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("new\n"), 0o644)
 	g(t, dir, "add", "b.txt")
 	g(t, dir, "commit", "-qm", "add b")
-	d, err := Drift(dir, base.Commit, "")
+	d, err := Drift(dir, base.Commit, base.Branch, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,11 +62,39 @@ func TestDrift_DetectsChangesSince(t *testing.T) {
 
 func TestDrift_MissingBaseDegrades(t *testing.T) {
 	dir := newRepo(t)
-	d, err := Drift(dir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "2020-01-01T00:00:00Z")
+	d, err := Drift(dir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "", "2020-01-01T00:00:00Z")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(d.Body, "基准 commit") || !strings.Contains(d.Body, "rebase/squash") {
 		t.Fatalf("missing base should degrade with hint, got: %q", d.Body)
+	}
+}
+
+func TestSnapshot_EmptyRepoNoFatalText(t *testing.T) {
+	dir := t.TempDir()
+	g(t, dir, "init", "-q")
+	s, err := Snapshot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.IsRepo {
+		t.Fatal("expected IsRepo true")
+	}
+	if strings.Contains(s.Commit, "fatal") || strings.Contains(s.Branch, "fatal") {
+		t.Fatalf("git stderr leaked into snapshot: %+v", s)
+	}
+}
+
+func TestDrift_WarnsOnDirtyWorktree(t *testing.T) {
+	dir := newRepo(t)
+	base, _ := Snapshot(dir)
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0o644) // uncommitted
+	d, err := Drift(dir, base.Commit, base.Branch, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(d.Body, "未提交") {
+		t.Fatalf("expected dirty-worktree warning, got: %q", d.Body)
 	}
 }

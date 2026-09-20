@@ -68,3 +68,18 @@ func TestStore_NoSelfSupersede(t *testing.T) {
 		t.Fatalf("self-supersede detected: %q", got.FM.Supersedes)
 	}
 }
+
+func TestStore_NoRetrogradeChain(t *testing.T) {
+	root := t.TempDir()
+	s, _ := Init(root, ".goon")
+	h1 := handoff.Handoff{FM: handoff.FrontMatter{Goon: 1, ID: "2026-09-20T10-00-00-codex", Source: "codex"}, Body: "## 目标\n1"}
+	h2 := handoff.Handoff{FM: handoff.FrontMatter{Goon: 1, ID: "2026-09-20T11-00-00-codex", Source: "codex"}, Body: "## 目标\n2"}
+	s.Save(h1, time.Now())
+	s.Save(h2, time.Now())
+	// re-save the OLDER h1 (finalize path): must not point h1 -> h2
+	s.Save(h1, time.Now())
+	got, _ := s.Load("2026-09-20T10-00-00-codex")
+	if got.FM.Supersedes != "" {
+		t.Fatalf("retrograde chain: old entry supersedes=%q", got.FM.Supersedes)
+	}
+}

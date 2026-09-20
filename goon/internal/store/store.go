@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"goon/internal/handoff"
 )
@@ -16,6 +17,7 @@ type Store struct {
 	dir         string
 	base        string
 	handoffsDir string
+	salvageDir  string
 }
 
 // Init creates the .goon layout (idempotent) and returns a usable Store.
@@ -23,7 +25,8 @@ func Init(root, dir string) (*Store, error) {
 	s := &Store{root: root, dir: dir}
 	s.base = filepath.Join(root, dir)
 	s.handoffsDir = filepath.Join(s.base, "handoffs")
-	for _, d := range []string{s.base, s.handoffsDir, filepath.Join(s.base, "salvage")} {
+	s.salvageDir = filepath.Join(s.base, "salvage")
+	for _, d := range []string{s.base, s.handoffsDir, s.salvageDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, err
 		}
@@ -36,12 +39,17 @@ func Init(root, dir string) (*Store, error) {
 	return s, nil
 }
 
+// SalvageDir is the gitignored directory where raw salvage drafts are written.
+func (s *Store) SalvageDir() string { return s.salvageDir }
+
 func (s *Store) path(id string) string { return filepath.Join(s.handoffsDir, id+".md") }
 
 // Save writes a handoff: if an earlier one exists and this one has no explicit
 // Supersedes, it is chained to the current latest, then index.md is refreshed.
+// Chaining is forward-only: re-saving an older entry (the finalize path) must
+// never re-point it at a newer one, which would form a retrograde cycle.
 func (s *Store) Save(h handoff.Handoff, now time.Time) error {
-	if prev, ok, _ := s.latestUnlocked(); ok && h.FM.Supersedes == "" && prev != h.FM.ID {
+	if prev, ok, _ := s.latestUnlocked(); ok && h.FM.Supersedes == "" && prev < h.FM.ID {
 		h.FM.Supersedes = prev
 	}
 	text, err := handoff.Render(h)
@@ -112,7 +120,18 @@ func (s *Store) writeIndex() error {
 		if err != nil {
 			continue
 		}
-		fmt.Fprintf(&b, "- `%s`  [%s]  git:%s\n", h.FM.ID, h.FM.Source, h.FM.Git.Commit)
+		fmt.Fprintf(&b, "- `%s`  [%s]  git:%s\n", printOnly(h.FM.ID), printOnly(h.FM.Source), printOnly(h.FM.Git.Commit))
 	}
 	return os.WriteFile(filepath.Join(s.base, "index.md"), []byte(b.String()), 0o644)
+}
+
+// printOnly neutralizes non-printable runes (control chars, newlines) in
+// untrusted frontmatter before they reach index.md, preventing line injection.
+func printOnly(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return ' '
+	}, s)
 }

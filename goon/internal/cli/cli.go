@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"goon/internal/config"
 	"goon/internal/distill"
@@ -17,6 +19,10 @@ import (
 	"goon/internal/resume"
 	"goon/internal/store"
 )
+
+// sourceSlug constrains a handoff source to a safe, filename-friendly token so
+// it can never smuggle a path separator or control char into an id or header.
+var sourceSlug = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$`)
 
 // App bundles the working directory, resolved config, and an injectable clock.
 type App struct {
@@ -62,11 +68,13 @@ func (a *App) Distill(m extract.SessionModel, chat llm.Chat) (string, error) {
 	if miss := handoff.ValidateBody(body); len(miss) > 0 {
 		return "", fmt.Errorf("distilled body missing sections: %v", miss)
 	}
+	// Snapshot before the store is (re)initialised so freshly-created .goon
+	// files never show up in the recorded dirty_files.
+	snap, _ := gitrepo.Snapshot(a.Root)
 	s, err := a.store()
 	if err != nil {
 		return "", err
 	}
-	snap, _ := gitrepo.Snapshot(a.Root)
 	id := handoff.NewID(a.now(), m.Source)
 	h := handoff.Handoff{FM: handoff.FrontMatter{
 		Goon: 1, ID: id, Created: a.now().UTC().Format(time.RFC3339), Source: m.Source, Project: filepath.Base(a.Root),
@@ -108,16 +116,17 @@ func (a *App) parseSession(path, source string) (extract.SessionModel, error) {
 	}
 }
 
-// WriteSalvage writes a redacted raw transcript to the salvage dir; returns filename.
+// WriteSalvage writes a redacted raw transcript to the store's gitignored
+// salvage dir; returns the filename.
 func (a *App) WriteSalvage(m extract.SessionModel) (string, error) {
-	if _, err := a.store(); err != nil {
+	s, err := a.store()
+	if err != nil {
 		return "", err
 	}
 	name := handoff.NewID(a.now(), m.Source) + ".raw.md"
-	rel := filepath.Join(a.Cfg.SalvageDir, name)
-	content := "# Salvage raw extract — " + m.Source + " " + m.SessionID + "\n\n" +
+	content := "# Salvage raw extract — " + printOnly(m.Source) + " " + printOnly(m.SessionID) + "\n\n" +
 		redact.Wrap(redact.Redact(m.Transcript())) + "\n"
-	full := filepath.Join(a.Root, rel)
+	full := filepath.Join(s.SalvageDir(), name)
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return "", err
 	}
@@ -144,7 +153,7 @@ func (a *App) Resume(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	d, err := gitrepo.Drift(a.Root, h.FM.Git.Commit, h.FM.Created)
+	d, err := gitrepo.Drift(a.Root, h.FM.Git.Commit, h.FM.Git.Branch, h.FM.Created)
 	if err != nil {
 		return "", err
 	}
@@ -172,12 +181,19 @@ func (a *App) Finalize(id string) error {
 
 // New creates a blank-template handoff (manual save path); returns its id.
 func (a *App) New(source string) (string, error) {
+	if !sourceSlug.MatchString(source) {
+		return "", fmt.Errorf("invalid source %q", source)
+	}
+	// Snapshot before the store is (re)initialised (see Distill).
+	snap, _ := gitrepo.Snapshot(a.Root)
 	s, err := a.store()
 	if err != nil {
 		return "", err
 	}
-	snap, _ := gitrepo.Snapshot(a.Root)
 	id := handoff.NewID(a.now(), source)
+	if err := safeID(id); err != nil {
+		return "", err
+	}
 	h := handoff.Handoff{FM: handoff.FrontMatter{
 		Goon: 1, ID: id, Created: a.now().UTC().Format(time.RFC3339), Source: source, Project: filepath.Base(a.Root),
 		Git: handoff.Git{Branch: snap.Branch, Commit: snap.Commit, Dirty: snap.Dirty, DirtyFiles: snap.DirtyFiles},
@@ -218,4 +234,15 @@ func safeID(id string) error {
 		return fmt.Errorf("invalid handoff id %q", id)
 	}
 	return nil
+}
+
+// printOnly neutralizes non-printable runes in untrusted values before they are
+// concatenated into a salvage file header line.
+func printOnly(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return ' '
+	}, s)
 }

@@ -94,6 +94,21 @@ func TestResume_RejectsPathTraversalID(t *testing.T) {
 	}
 }
 
+func TestNew_RejectsInvalidSource(t *testing.T) {
+	app := newApp(t)
+	if err := app.Init(); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"", "..", "a/b", "fo<o", strings.Repeat("x", 40)} {
+		if _, err := app.New(bad); err == nil {
+			t.Fatalf("expected invalid source rejection for %q", bad)
+		}
+	}
+	if _, err := app.New("codex"); err != nil {
+		t.Fatalf("valid source should succeed: %v", err)
+	}
+}
+
 func TestFinalize_RejectsMissingSections(t *testing.T) {
 	app := newApp(t)
 	if err := app.Init(); err != nil {

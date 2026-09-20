@@ -35,15 +35,23 @@ func dispatch(args []string) (string, error) {
 		}
 		return app.New(src)
 	case "distill":
-		if len(args) < 3 {
-			return "", fmt.Errorf("usage: goon distill <source> <session-file>")
+		switch {
+		case len(args) >= 3:
+			return app.DistillFile(args[2], args[1])
+		case len(args) == 1 || args[1] == "--recent":
+			return app.AutoDistill()
+		default:
+			return "", fmt.Errorf("usage: goon distill [source <session-id-or-file>]  (no args = most recent across all clients)")
 		}
-		return app.DistillFile(args[2], args[1])
 	case "salvage":
-		if len(args) < 3 {
-			return "", fmt.Errorf("usage: goon salvage <source> <session-file>")
+		switch {
+		case len(args) >= 3:
+			return app.SalvageFile(args[2], args[1])
+		case len(args) == 1 || args[1] == "--recent":
+			return app.AutoSalvage()
+		default:
+			return "", fmt.Errorf("usage: goon salvage [source <session-id-or-file>]  (no args = most recent across all clients)")
 		}
-		return app.SalvageFile(args[2], args[1])
 	case "resume":
 		id := ""
 		if len(args) > 1 {

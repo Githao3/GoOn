@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	"goon/internal/config"
+	"goon/internal/discover"
 	"goon/internal/distill"
 	"goon/internal/extract"
 	"goon/internal/gitrepo"
@@ -25,21 +26,50 @@ import (
 var sourceSlug = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$`)
 
 // App bundles the working directory, resolved config, and an injectable clock.
+// roots are the resolved per-client session locations used for auto-discovery.
 type App struct {
-	Root string
-	Cfg  config.Config
-	Now  func() time.Time
+	Root  string
+	Cfg   config.Config
+	Now   func() time.Time
+	roots discover.Roots
+}
+
+// withRootDefaults fills empty per-client session roots from the user's home dir.
+// An empty home leaves the config untouched (discovery then simply finds nothing).
+func withRootDefaults(cfg config.Config, home string) config.Config {
+	set := func(p *string, def string) {
+		if *p == "" {
+			*p = def
+		}
+	}
+	if home != "" {
+		set(&cfg.ClaudeProjects, filepath.Join(home, ".claude", "projects"))
+		set(&cfg.CodexSessions, filepath.Join(home, ".codex", "sessions"))
+		set(&cfg.OpenCodeDB, filepath.Join(home, ".local", "share", "opencode", "opencode.db"))
+		set(&cfg.ZcodeDB, filepath.Join(home, ".zcode", "cli", "db", "db.sqlite"))
+	}
+	return cfg
 }
 
 // New builds an App for the given project root, loading global+project config.
 func New(root string) *App {
+	home := ""
+	if h, err := os.UserHomeDir(); err == nil {
+		home = h
+	}
 	cfg := config.Config{HandoffDir: ".goon/handoffs", SalvageDir: ".goon/salvage", DriftVerbosity: "summary", SalvageKeepDays: 7, LLM: config.LLM{Provider: "openai-compatible", APIKeyEnv: "GOON_LLM_KEY", Model: "gpt-4o-mini"}}
-	if home, err := os.UserHomeDir(); err == nil {
+	if home != "" {
 		if c, err := config.Load(filepath.Join(home, ".goon", "config.yaml"), filepath.Join(root, ".goon", "config.yaml")); err == nil {
 			cfg = c
 		}
 	}
-	return &App{Root: root, Cfg: cfg, Now: time.Now}
+	cfg = withRootDefaults(cfg, home)
+	return &App{Root: root, Cfg: cfg, Now: time.Now, roots: discover.Roots{
+		ClaudeProjects: cfg.ClaudeProjects,
+		CodexSessions:  cfg.CodexSessions,
+		OpenCodeDB:     cfg.OpenCodeDB,
+		ZcodeDB:        cfg.ZcodeDB,
+	}}
 }
 
 func (a *App) now() time.Time {
@@ -87,7 +117,8 @@ func (a *App) Distill(m extract.SessionModel, chat llm.Chat) (string, error) {
 	return id, nil
 }
 
-// DistillFile parses a session file (source: claude-code|codex) and distills it.
+// DistillFile parses one session (source: claude-code|codex take a file path,
+// opencode|zcode take a session id) and distills it.
 func (a *App) DistillFile(path, source string) (string, error) {
 	m, err := a.parseSession(path, source)
 	if err != nil {
@@ -96,7 +127,7 @@ func (a *App) DistillFile(path, source string) (string, error) {
 	return a.Distill(m, llm.New(a.Cfg.LLM))
 }
 
-// SalvageFile parses a session file and writes a raw (non-LLM) transcript draft.
+// SalvageFile parses one session and writes a raw (non-LLM) transcript draft.
 func (a *App) SalvageFile(path, source string) (string, error) {
 	m, err := a.parseSession(path, source)
 	if err != nil {
@@ -111,9 +142,58 @@ func (a *App) parseSession(path, source string) (extract.SessionModel, error) {
 		return extract.ParseClaudeFile(path)
 	case "codex":
 		return extract.ParseCodexFile(path)
+	case "opencode":
+		return extract.ParseOpenCodeDB(a.roots.OpenCodeDB, path)
+	case "zcode":
+		return extract.ParseZcodeDB(a.roots.ZcodeDB, path)
 	default:
-		return extract.SessionModel{}, fmt.Errorf("unsupported source %q (P1 supports claude-code, codex)", source)
+		return extract.SessionModel{}, fmt.Errorf("unsupported source %q (supports claude-code, codex, opencode, zcode)", source)
 	}
+}
+
+// parseCandidate turns a discovered candidate into a session model. JSONL
+// candidates carry the file path in Ref; SQLite candidates use "db#sessionID".
+func (a *App) parseCandidate(c discover.Candidate) (extract.SessionModel, error) {
+	switch c.Kind {
+	case discover.KindSQLite:
+		db, id, ok := strings.Cut(c.Ref, "#")
+		if !ok {
+			return extract.SessionModel{}, fmt.Errorf("bad sqlite ref %q", c.Ref)
+		}
+		if c.Client == "zcode" {
+			return extract.ParseZcodeDB(db, id)
+		}
+		return extract.ParseOpenCodeDB(db, id)
+	default: // KindJSONL
+		return a.parseSession(c.Ref, c.Client)
+	}
+}
+
+// recentSession returns the newest discovered session for the project, or error.
+func (a *App) recentSession() (extract.SessionModel, error) {
+	cands := discover.Recent(a.Root, a.roots)
+	if len(cands) == 0 {
+		return extract.SessionModel{}, fmt.Errorf("no recent session found for this project (checked claude-code, codex, opencode, zcode)")
+	}
+	return a.parseCandidate(cands[0])
+}
+
+// AutoSalvage writes a raw draft from the most recent discovered session.
+func (a *App) AutoSalvage() (string, error) {
+	m, err := a.recentSession()
+	if err != nil {
+		return "", err
+	}
+	return a.WriteSalvage(m)
+}
+
+// AutoDistill distills the most recent discovered session (needs LLM).
+func (a *App) AutoDistill() (string, error) {
+	m, err := a.recentSession()
+	if err != nil {
+		return "", err
+	}
+	return a.Distill(m, llm.New(a.Cfg.LLM))
 }
 
 // WriteSalvage writes a redacted raw transcript to the store's gitignored

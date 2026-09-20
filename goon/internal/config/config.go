@@ -13,12 +13,20 @@ type LLM struct {
 	Model     string `yaml:"model"`
 }
 
+// Config holds user-tunable settings. The four per-client session roots are
+// optional: leaving one empty means "resolve from the user's home dir", which
+// the CLI does (config stays free of home-path knowledge).
 type Config struct {
 	HandoffDir      string `yaml:"handoff_dir"`
 	SalvageDir      string `yaml:"salvage_dir"`
 	SalvageKeepDays int    `yaml:"salvage_keep_days"`
 	DriftVerbosity  string `yaml:"drift_verbosity"`
 	LLM             LLM    `yaml:"llm"`
+
+	ClaudeProjects string `yaml:"claude_projects"`
+	CodexSessions  string `yaml:"codex_sessions"`
+	OpenCodeDB     string `yaml:"opencode_db"`
+	ZcodeDB        string `yaml:"zcode_db"`
 }
 
 func defaults() Config {

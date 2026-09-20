@@ -34,14 +34,35 @@ type App struct {
 	roots discover.Roots
 }
 
-// withRootDefaults fills empty per-client session roots from the user's home dir.
-// An empty home leaves the config untouched (discovery then simply finds nothing).
+// expandHome resolves a leading "~" (as "~", "~/x" or "~\x") against home, so a
+// config file written with shell-style paths still points at the real dir. Go
+// never expands "~" itself, and an unset home leaves the value untouched.
+func expandHome(p, home string) string {
+	if home == "" || !strings.HasPrefix(p, "~") {
+		return p
+	}
+	if p == "~" {
+		return home
+	}
+	if len(p) > 1 && (p[1] == '/' || p[1] == '\\') {
+		return filepath.Join(home, filepath.ToSlash(p[2:]))
+	}
+	return p
+}
+
+// withRootDefaults expands "~" in every configured root, then fills the EMPTY
+// ones from the user's home dir. An empty home leaves those empty (discovery
+// then simply finds nothing).
 func withRootDefaults(cfg config.Config, home string) config.Config {
 	set := func(p *string, def string) {
 		if *p == "" {
 			*p = def
 		}
 	}
+	cfg.ClaudeProjects = expandHome(cfg.ClaudeProjects, home)
+	cfg.CodexSessions = expandHome(cfg.CodexSessions, home)
+	cfg.OpenCodeDB = expandHome(cfg.OpenCodeDB, home)
+	cfg.ZcodeDB = expandHome(cfg.ZcodeDB, home)
 	if home != "" {
 		set(&cfg.ClaudeProjects, filepath.Join(home, ".claude", "projects"))
 		set(&cfg.CodexSessions, filepath.Join(home, ".codex", "sessions"))
@@ -59,7 +80,12 @@ func New(root string) *App {
 	}
 	cfg := config.Config{HandoffDir: ".goon/handoffs", SalvageDir: ".goon/salvage", DriftVerbosity: "summary", SalvageKeepDays: 7, LLM: config.LLM{Provider: "openai-compatible", APIKeyEnv: "GOON_LLM_KEY", Model: "gpt-4o-mini"}}
 	if home != "" {
-		if c, err := config.Load(filepath.Join(home, ".goon", "config.yaml"), filepath.Join(root, ".goon", "config.yaml")); err == nil {
+		c, err := config.Load(filepath.Join(home, ".goon", "config.yaml"), filepath.Join(root, ".goon", "config.yaml"))
+		if err != nil {
+			// A config file exists but is malformed; missing files are not an
+			// error. Warn instead of silently falling back to defaults.
+			fmt.Fprintln(os.Stderr, "goon: ignoring invalid config:", err)
+		} else {
 			cfg = c
 		}
 	}
@@ -156,9 +182,9 @@ func (a *App) parseSession(path, source string) (extract.SessionModel, error) {
 func (a *App) parseCandidate(c discover.Candidate) (extract.SessionModel, error) {
 	switch c.Kind {
 	case discover.KindSQLite:
-		db, id, ok := strings.Cut(c.Ref, "#")
-		if !ok {
-			return extract.SessionModel{}, fmt.Errorf("bad sqlite ref %q", c.Ref)
+		db, id, err := splitSQLiteRef(c.Ref)
+		if err != nil {
+			return extract.SessionModel{}, err
 		}
 		if c.Client == "zcode" {
 			return extract.ParseZcodeDB(db, id)
@@ -167,6 +193,17 @@ func (a *App) parseCandidate(c discover.Candidate) (extract.SessionModel, error)
 	default: // KindJSONL
 		return a.parseSession(c.Ref, c.Client)
 	}
+}
+
+// splitSQLiteRef splits a discovered SQLite ref into db path + session id on
+// the LAST '#': a db path may itself contain '#', and only the final one is
+// the separator written by discover (dbPath + "#" + sessionID).
+func splitSQLiteRef(ref string) (string, string, error) {
+	i := strings.LastIndex(ref, "#")
+	if i < 0 {
+		return "", "", fmt.Errorf("bad sqlite ref %q", ref)
+	}
+	return ref[:i], ref[i+1:], nil
 }
 
 // recentSession returns the newest discovered session for the project, or error.

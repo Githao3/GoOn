@@ -228,6 +228,26 @@ func TestAuto_NoSessionsErrors(t *testing.T) {
 	}
 }
 
+func TestSplitSQLiteRef(t *testing.T) {
+	for _, tc := range []struct{ ref, wantDB, wantID string }{
+		{`C:\Users\me\.local\share\opencode\opencode.db#ses_1`, `C:\Users\me\.local\share\opencode\opencode.db`, "ses_1"},
+		{"/tmp/we#ird.db#ses_2", "/tmp/we#ird.db", "ses_2"},
+		{"a#b#c", "a#b", "c"},
+	} {
+		db, id, err := splitSQLiteRef(tc.ref)
+		if err != nil {
+			t.Errorf("splitSQLiteRef(%q): %v", tc.ref, err)
+			continue
+		}
+		if db != tc.wantDB || id != tc.wantID {
+			t.Errorf("splitSQLiteRef(%q) = (%q, %q), want (%q, %q)", tc.ref, db, id, tc.wantDB, tc.wantID)
+		}
+	}
+	if _, _, err := splitSQLiteRef("no-separator"); err == nil || !strings.Contains(err.Error(), "bad sqlite ref") {
+		t.Fatalf("ref without '#' should error, got %v", err)
+	}
+}
+
 func TestWithRootDefaults(t *testing.T) {
 	cfg := withRootDefaults(config.Config{ClaudeProjects: "D:/custom"}, `C:\Users\me`)
 	if cfg.ClaudeProjects != "D:/custom" {
@@ -242,5 +262,52 @@ func TestWithRootDefaults(t *testing.T) {
 	// No home: leave everything empty rather than invent paths.
 	if got := withRootDefaults(config.Config{}, ""); got.OpenCodeDB != "" {
 		t.Fatalf("empty home should not default roots, got %q", got.OpenCodeDB)
+	}
+}
+
+// TestWithRootDefaults_ExpandsTilde guards the silent-discovery-failure case: a
+// user-set "~/..." root is non-empty, so the home default never overwrites it —
+// it must be expanded instead, since Go never expands "~" itself.
+func TestWithRootDefaults_ExpandsTilde(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	got := withRootDefaults(config.Config{ClaudeProjects: "~/x", CodexSessions: `~\y`, ZcodeDB: "~"}, home)
+	if got.ClaudeProjects != filepath.Join(home, "x") {
+		t.Fatalf("~/x should expand, got %q", got.ClaudeProjects)
+	}
+	if got.CodexSessions != filepath.Join(home, "y") {
+		t.Fatalf(`~\y should expand, got %q`, got.CodexSessions)
+	}
+	if got.ZcodeDB != home {
+		t.Fatalf("bare ~ should expand to home, got %q", got.ZcodeDB)
+	}
+	// Absolute stays untouched; empty still takes the home default.
+	if got.OpenCodeDB != filepath.Join(home, ".local", "share", "opencode", "opencode.db") {
+		t.Fatalf("empty root should be defaulted, got %q", got.OpenCodeDB)
+	}
+	abs := filepath.Join(home, "abs", "db.sqlite")
+	if got := withRootDefaults(config.Config{OpenCodeDB: abs}, home); got.OpenCodeDB != abs {
+		t.Fatalf("absolute root must stay unchanged, got %q", got.OpenCodeDB)
+	}
+}
+
+func TestExpandHome(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	for _, tc := range []struct{ in, want string }{
+		{"~/x", filepath.Join(home, "x")},
+		{`~\x`, filepath.Join(home, "x")},
+		{"~", home},
+		{"~/a/b", filepath.Join(home, "a", "b")},
+		{"", ""},
+		{"D:/custom", "D:/custom"},
+		{`C:\Users\me\.claude\projects`, `C:\Users\me\.claude\projects`},
+		{"~tildeuser/x", "~tildeuser/x"}, // not ours to expand
+	} {
+		if got := expandHome(tc.in, home); got != tc.want {
+			t.Errorf("expandHome(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	// Without a home the value passes through verbatim.
+	if got := expandHome("~/x", ""); got != "~/x" {
+		t.Fatalf("empty home must leave the value alone, got %q", got)
 	}
 }

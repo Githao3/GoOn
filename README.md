@@ -20,7 +20,7 @@
 
 ## 安装
 
-需要 Go 1.22+：
+需要 Go 1.25+：
 
 ```powershell
 go build -o "$env:LOCALAPPDATA\Programs\goon\goon.exe" .\goon\cmd\goon
@@ -80,6 +80,7 @@ llm:
   model: gpt-4o-mini
 
 # 会话发现根目录（可选；留空 = 按上面表格的家目录默认）
+# 支持 `~` 前缀（`~/x`、`~\x` 会展开成家目录），也可直接写绝对路径
 claude_projects: ~/.claude/projects
 codex_sessions:  ~/.codex/sessions
 opencode_db:     ~/.local/share/opencode/opencode.db
@@ -103,3 +104,5 @@ zcode_db:        ~/.zcode/cli/db/db.sqlite
 **P2 已完成**：opencode / zcode 的 SQLite 适配器（只读）、跨客户端会话发现（四端按项目目录归并排序）、CLI 打通（`goon salvage` / `goon distill` 不带参数即自动选最近会话）。
 
 **P3（下一步）**：`goon install` 一键把 skill 铺到各客户端、跨端一致性打磨（标题/时间字段差异、失败降级）、更多交接增强。详见 `docs/superpowers/`。
+
+> 会话根目录配置里的 `~` 会被展开（见上）；配置文件有误时会向 stderr 打一行提醒并继续用默认值。

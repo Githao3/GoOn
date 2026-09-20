@@ -11,12 +11,6 @@ import (
 	_ "modernc.org/sqlite" // registers the "sqlite" driver for the synthetic fixture
 )
 
-// wantSlug mirrors the production slug so tests can lay out the expected
-// per-project directory without importing the unexported helper's exact form.
-func wantSlug(cwd string) string {
-	return strings.NewReplacer(":", "-", `\`, "-", "/", "-").Replace(cwd)
-}
-
 // writeFileWithMtime writes content to path (creating parent dirs) and pins the
 // modification time so merge ordering is deterministic.
 func writeFileWithMtime(t *testing.T, path string, content string, mtime time.Time) {
@@ -65,7 +59,7 @@ func TestRecent_MergesAndSorts(t *testing.T) {
 
 	// Two claude sessions under the slug dir: now-2h and now-1h.
 	claudeRoot := filepath.Join(root, "claude-projects")
-	slugDir := filepath.Join(claudeRoot, wantSlug(cwd))
+	slugDir := filepath.Join(claudeRoot, claudeSlug(cwd))
 	now := time.Now()
 	writeFileWithMtime(t, filepath.Join(slugDir, "session-a.jsonl"),
 		`{"type":"user","message":{"role":"user","content":"a"}}`+"\n", now.Add(-2*time.Hour))
@@ -109,7 +103,7 @@ func TestClaudeSlugAndTitle(t *testing.T) {
 	root := t.TempDir()
 	cwd := `D:\Attempt\ClaudeCode\Test`
 	claudeRoot := filepath.Join(root, "claude-projects")
-	slugDir := filepath.Join(claudeRoot, wantSlug(cwd))
+	slugDir := filepath.Join(claudeRoot, claudeSlug(cwd))
 	if got := filepath.Base(slugDir); got != "D--Attempt-ClaudeCode-Test" {
 		t.Fatalf("unexpected slug dir name %q (want D--Attempt-ClaudeCode-Test)", got)
 	}
@@ -133,6 +127,41 @@ func TestClaudeSlugAndTitle(t *testing.T) {
 	}
 	if c.Title != "hello world" {
 		t.Fatalf("title = %q, want %q", c.Title, "hello world")
+	}
+}
+
+// TestClaudeSlugScheme pins the observed on-disk naming scheme with literal
+// expectations (no copy of the implementation): the drive colon and the path
+// separators become dashes 1:1, and spaces must be encoded too, otherwise
+// discovery never matches Claude's real directory name.
+func TestClaudeSlugScheme(t *testing.T) {
+	for _, tc := range []struct{ cwd, want string }{
+		{`D:\Attempt\ClaudeCode\Test`, "D--Attempt-ClaudeCode-Test"},
+		{`C:\Users\X\My Documents\proj`, "C--Users-X-My-Documents-proj"},
+		{`/home/me/my proj`, "-home-me-my-proj"},
+	} {
+		if got := claudeSlug(tc.cwd); got != tc.want {
+			t.Errorf("claudeSlug(%q) = %q, want %q", tc.cwd, got, tc.want)
+		}
+	}
+}
+
+// TestClaudeCandidates_SpaceInCwd lays the per-project dir out by its literal
+// on-disk name (dashes where the cwd has spaces) and requires discovery to hit.
+func TestClaudeCandidates_SpaceInCwd(t *testing.T) {
+	root := t.TempDir()
+	cwd := `C:\Users\X\My Documents\proj`
+	claudeRoot := filepath.Join(root, "claude-projects")
+	dir := filepath.Join(claudeRoot, "C--Users-X-My-Documents-proj")
+	writeFileWithMtime(t, filepath.Join(dir, "s1.jsonl"),
+		`{"type":"user","message":{"role":"user","content":"hi"}}`+"\n", time.Now())
+
+	got := Recent(cwd, Roots{ClaudeProjects: claudeRoot})
+	if len(got) != 1 {
+		t.Fatalf("spaced cwd not discovered, got %d candidates: %+v", len(got), got)
+	}
+	if got[0].Client != "claude-code" || got[0].Kind != KindJSONL {
+		t.Fatalf("bad client/kind: %+v", got[0])
 	}
 }
 

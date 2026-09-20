@@ -49,8 +49,9 @@ func Recent(cwd string, r Roots) []Candidate {
 }
 
 // claudeSlug turns a cwd into the observed per-project directory name by
-// replacing path separators and the drive colon with dashes.
-var claudeSlugReplacer = strings.NewReplacer(":", "-", `\`, "-", "/", "-")
+// replacing path separators, the drive colon and whitespace with dashes, 1:1
+// (consecutive separators are NOT collapsed — that is Claude's on-disk scheme).
+var claudeSlugReplacer = strings.NewReplacer(":", "-", `\`, "-", "/", "-", " ", "-", "\t", "-")
 
 func claudeSlug(cwd string) string {
 	return claudeSlugReplacer.Replace(cwd)

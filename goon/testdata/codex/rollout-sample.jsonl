@@ -1,0 +1,4 @@
+{"timestamp":"t0","ordinal":0,"type":"session_meta","payload":{"session_id":"c1","cwd":"C:\\tmp","cli_version":"0.154.0"}}
+{"timestamp":"t1","ordinal":1,"type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"t2","ordinal":2,"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"看下目录"}]}}
+{"timestamp":"t3","ordinal":3,"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"好的"}]}}

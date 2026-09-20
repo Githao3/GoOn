@@ -1,0 +1,5 @@
+# build artifacts
+*.exe
+*.test
+/goon
+/goon.exe
